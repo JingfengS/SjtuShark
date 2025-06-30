@@ -21,8 +21,6 @@ class SnifferGUI(tk.Tk):
         # Populate the interface dropdown
         self._populate_interfaces()
 
-        # Counter for packet IDs
-        self.packet_id = 0
 
     def _create_widgets(self):
         """Creates all the GUI widgets."""
@@ -59,7 +57,6 @@ class SnifferGUI(tk.Tk):
         self.tree.column("Protocol", width=80)
         self.tree.column("Info", width=400)
         self.tree.bind("<<TreeviewSelect>>", self.show_packet_details)
-        self.packet_details_storage = {}
 
         # --- Packet Details Display ---
         self.details_frame = ttk.LabelFrame(self, text="Packet Details")
@@ -96,8 +93,7 @@ class SnifferGUI(tk.Tk):
         self.stop_button.config(state="normal")
         self.iface_combo.config(state="disabled")
         self.tree.delete(*self.tree.get_children())  # Clear previous results
-        self.packet_details_storage.clear()
-        self.packet_id = 0
+        self.backend.clear_captured_packets() # Clear backend data
 
         selected_iface = self.iface_combo.get()
         self.backend.start_sniffing(selected_iface)
@@ -117,13 +113,16 @@ class SnifferGUI(tk.Tk):
         This is called by the backend sniffer thread.
         """
         # The `after` method schedules a function to be called in the main GUI thread
-        self.after(0, self._insert_packet_data, packet_summary, packet_details)
+        self.after(0, self._insert_packet_data) # 不再传递具体信息
 
-    def _insert_packet_data(self, packet_summary, packet_details):
+    def _insert_packet_data(self):
         """Inserts packet data into the Treeview and stores details."""
-        self.packet_id += 1
-        item_id = self.tree.insert("", "end", values=(self.packet_id,) + packet_summary)
-        self.packet_details_storage[item_id] = packet_details
+        idx = len(self.backend.captured_packets)
+        if idx == 0:
+            return
+        summary = self.backend.captured_packets[-1][0]
+        self.tree.insert("", "end", values=(idx,) + summary)
+        # 不再保存具体信息
 
     def show_packet_details(self, event):
         """Displays detailed info for the selected packet."""
@@ -132,7 +131,16 @@ class SnifferGUI(tk.Tk):
             return
 
         item_id = selected_item[0]
-        details = self.packet_details_storage.get(item_id, "No details available.")
+        values = self.tree.item(item_id)["values"]
+        if not values:
+            details = "No details available."
+        else:
+            # values[0] 是 packet_id，从 1 开始
+            idx = int(values[0]) - 1
+            if 0 <= idx < len(self.backend.captured_packets):
+                details = self.backend.captured_packets[idx][1]
+            else:
+                details = "No details available."
 
         self.details_text.config(state="normal")
         self.details_text.delete(1.0, tk.END)
@@ -141,7 +149,7 @@ class SnifferGUI(tk.Tk):
 
     def save_to_txt(self):
         """Saves the captured packet summaries to a text file."""
-        if not self.tree.get_children():
+        if not self.backend.captured_packets:
             messagebox.showinfo("Info", "There are no packets to save.")
             return
 
@@ -153,21 +161,6 @@ class SnifferGUI(tk.Tk):
         if not file_path:
             return
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write("--- Captured Packets ---\n\n")
-            for item_id in self.tree.get_children():
-                row_values = self.tree.item(item_id)["values"]
-                # Format summary line
-                f.write(
-                    f"Packet #{row_values[0]}: Time={row_values[1]}, "
-                    f"Src={row_values[2]}, Dst={row_values[3]}, "
-                    f"Proto={row_values[4]}, Info={row_values[5]}\n"
-                )
-
-                # Write detailed breakdown
-                details = self.packet_details_storage.get(item_id, "")
-                f.write("-" * 20 + " Details " + "-" * 20 + "\n")
-                f.write(details)
-                f.write("\n\n")
-
+        # 建议调用后端方法
+        self.backend.save_captured_packets(file_path)
         messagebox.showinfo("Success", f"Data saved to {file_path}")
