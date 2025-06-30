@@ -3,7 +3,6 @@ from tkinter import ttk, scrolledtext, messagebox, filedialog
 import scapy.all as scapy
 from scapy.layers.l2 import Ether, ARP
 from scapy.layers.inet import IP, TCP, UDP, ICMP
-from scapy.arch.windows import get_windows_if_list
 import threading
 import datetime
 import platform
@@ -38,6 +37,7 @@ class SnifferBackend:
         if platform.system() == "Windows":
             try:
                 # This provides more descriptive names on Windows
+                from scapy.arch.windows import get_windows_if_list
                 win_ifaces = get_windows_if_list()
                 return [iface["name"] for iface in win_ifaces if "name" in iface]
             except ImportError:
