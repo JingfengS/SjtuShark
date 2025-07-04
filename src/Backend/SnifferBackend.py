@@ -21,6 +21,16 @@ class SnifferBackend:
         self.sniffer_thread = None
         self.gui_callback = gui_callback
         self.captured_packets = []  # List to store captured packets
+        self.stats = { # Dictionary to store statistics
+            "ip_total": 0,
+            "tcp_total": 0,
+            "udp_total": 0,
+            "icmp_total": 0,
+            "http_total": 0,
+            "https_total": 0,
+            "arp_total": 0,
+            "ethernet_total": 0,
+        }
 
     def get_network_interfaces(self):
         """
@@ -97,10 +107,12 @@ class SnifferBackend:
                 info = f"Who has {dst_addr}? Tell {src_addr}"
             else:  # is-at
                 info = f"At {src_addr} is-at {packet[ARP].hwsrc}"
+            self.stats["arp_total"] += 1
 
         elif IP in packet:
             src_addr = packet[IP].src
             dst_addr = packet[IP].dst
+            self.stats["ip_total"] += 1
 
             if TCP in packet:
                 proto = "TCP"
@@ -109,6 +121,7 @@ class SnifferBackend:
                 info = (
                     f"Src Port: {sport} -> Dst Port: {dport} Flags: {packet[TCP].flags}"
                 )
+                self.stats["tcp_total"] += 1
 
                 # HTTP/HTTPS
                 raw = bytes(packet[TCP].payload)
@@ -139,10 +152,12 @@ class SnifferBackend:
                 info = (
                     f"Src Port: {sport} -> Dst Port: {dport} Length: {packet[UDP].len}"
                 )
+                self.stats["udp_total"] += 1
 
             elif ICMP in packet:
                 proto = "ICMP"
                 info = f"Type: {packet[ICMP].type} Code: {packet[ICMP].code}"
+                self.stats["icmp_total"] += 1
 
             else:
                 proto = "IP"
@@ -153,6 +168,7 @@ class SnifferBackend:
             src_addr = packet[Ether].src
             dst_addr = packet[Ether].dst
             info = f"EtherType: {hex(packet[Ether].type)}"
+            self.stats["ethernet_total"] += 1
 
         # Prepare data for GUI
         packet_summary = (timestamp, src_addr, dst_addr, proto, info)
@@ -184,6 +200,32 @@ class SnifferBackend:
         Deletes a packet by its ID.
         """
         if 0 <= packet_id < len(self.captured_packets):
+            summary = self.captured_packets[packet_id][0]
+            proto = summary[3]
+            # 分层递减
+            if proto == "HTTP":
+                self.stats["http_total"] -= 1
+                self.stats["tcp_total"] -= 1
+                self.stats["ip_total"] -= 1 
+            elif proto == "HTTPS":
+                self.stats["https_total"] -= 1
+                self.stats["tcp_total"] -= 1
+                self.stats["ip_total"] -= 1
+            elif proto == "TCP":
+                self.stats["tcp_total"] -= 1
+                self.stats["ip_total"] -= 1
+            elif proto == "UDP":
+                self.stats["udp_total"] -= 1
+                self.stats["ip_total"] -= 1
+            elif proto == "ICMP":
+                self.stats["icmp_total"] -= 1
+                self.stats["ip_total"] -= 1
+            elif proto == "IP":
+                self.stats["ip_total"] -= 1
+            elif proto == "ARP":
+                self.stats["arp_total"] -= 1
+            elif proto == "Ethernet":
+                self.stats["ethernet_total"] -= 1
             del self.captured_packets[packet_id]
             return True
         return False
@@ -194,6 +236,8 @@ class SnifferBackend:
         Clears the captured packets list.
         """
         self.captured_packets.clear()
+        for k in self.stats:
+            self.stats[k] = 0
         return True
     
     def save_captured_packets(self, file_path):
@@ -209,3 +253,6 @@ class SnifferBackend:
                 f.write("-" * 20 + " Details " + "-" * 20 + "\n")
                 f.write(details)
                 f.write("\n\n")
+
+    def get_stats(self):
+        return dict(self.stats)
