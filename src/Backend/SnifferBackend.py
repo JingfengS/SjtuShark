@@ -178,13 +178,14 @@ class SnifferBackend:
         self.gui_callback(packet_summary, packet_details)
 
     
-    def match(summary, expr=None):
+    def match(self, summary, expr=""):
         """
         Under development
         """
+        return True
         
     # To be implemented in SnifferGUI
-    def query_packets(self, expr=None):
+    def query_packets(self, expr=""):
         """
         Query filter
         """
