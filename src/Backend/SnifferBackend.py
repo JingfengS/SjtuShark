@@ -31,6 +31,7 @@ class SnifferBackend:
         self.sniffer_thread = None
         self.gui_callback = gui_callback
         self.captured_packets = []  # List to store captured packets
+        self.captured_packets_raw = []  # List to store raw captured packets
         self.stats = { # Dictionary to store statistics
             "ip_total": 0,
             "tcp_total": 0,
@@ -185,6 +186,7 @@ class SnifferBackend:
         # Prepare data for GUI
         packet_summary = (timestamp, src_addr, dst_addr, proto, info)
         packet_details = packet.show(dump=True)  # Full packet details for the text view
+        self.captured_packets_raw.append(packet)
         self.captured_packets.append((packet_summary, packet_details))  # Save captured packets 
         # Use the callback to update the GUI safely from this thread
         self.gui_callback(packet_summary, packet_details)
@@ -240,6 +242,7 @@ class SnifferBackend:
             elif proto == "Ethernet":
                 self.stats["ethernet_total"] -= 1
             del self.captured_packets[packet_id]
+            del self.captured_packets_raw[packet_id]
             return True
         return False
     
@@ -249,6 +252,7 @@ class SnifferBackend:
         Clears the captured packets list.
         """
         self.captured_packets.clear()
+        self.captured_packets_raw.clear()
         for k in self.stats:
             self.stats[k] = 0
         return True
@@ -269,3 +273,19 @@ class SnifferBackend:
 
     def get_stats(self):
         return dict(self.stats)
+    
+    def export_to_pcap(self, file_path):
+        """
+        Exports captured packets to a pcap file.
+        """
+        if self.captured_packets_raw:
+            scapy.wrpcap(file_path, self.captured_packets_raw)
+
+    def import_from_pcap(self, file_path):
+        """
+        Imports packets from a pcap file and processes them.
+        """
+        self.clear_captured_packets()
+        pkts = scapy.rdpcap(file_path)
+        for packet in pkts:
+            self._process_packet(packet)
