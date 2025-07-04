@@ -10,7 +10,17 @@ import re
 
 # --- Backend Logic ---
 
+# <<< ADDED: Dictionaries for human-readable descriptions >>>
+TCP_FLAGS = {
+    "F": "FIN", "S": "SYN", "R": "RST", "P": "PSH",
+    "A": "ACK", "U": "URG", "E": "ECE", "C": "CWR",
+}
 
+ICMP_TYPES = {
+    0: "Echo Reply", 3: "Destination Unreachable", 4: "Source Quench",
+    5: "Redirect", 8: "Echo Request", 11: "Time Exceeded",
+}
+# <<< END ADDED SECTION >>>
 class SnifferBackend:
     """
     Handles all the packet sniffing and processing logic.
@@ -118,45 +128,47 @@ class SnifferBackend:
                 proto = "TCP"
                 sport = packet[TCP].sport
                 dport = packet[TCP].dport
-                info = (
-                    f"Src Port: {sport} -> Dst Port: {dport} Flags: {packet[TCP].flags}"
-                )
+                flag_str = "".join([TCP_FLAGS[f] for f in str(packet[TCP].flags)])
+                info = f"{sport} -> {dport} [{flag_str}]"
                 self.stats["tcp_total"] += 1
 
                 # HTTP/HTTPS
                 raw = bytes(packet[TCP].payload)
                 if raw:
-                    try:
-                        http_text = raw.decode(errors="ignore")
-                        if http_text.startswith(
-                            ("GET", "POST", "HTTP", "PUT", "DELETE", "HEAD", "OPTIONS")
-                        ):
+                    if sport == 80 or dport == 80:
+                         if raw.startswith((b"GET", b"POST", b"HTTP", b"PUT", b"DELETE", b"HEAD")):
                             proto = "HTTP"
-                            first_line = http_text.split("\r\n")[0]
-                            info = f"HTTP: {first_line}"
-                    except Exception:
-                        pass
-
-                if raw and (
-                    sport == 443
-                    or dport == 443
-                    or raw.startswith(b"\x16\x03")
-                ):
-                    proto = "HTTPS"
-                    info = "Ciphered text"
+                            try:
+                                http_text = raw.decode(errors="ignore")
+                                first_line = http_text.split("\r\n")[0]
+                                info = f"HTTP Request: {first_line}"
+                            except:
+                                info = "HTTP Packet (undecoded)"
+                    elif sport == 443 or dport == 443 or raw.startswith(b"\x16\x03"):
+                        proto = "HTTPS"
+                        info = "Encrypted TLS/SSL Data"
 
             elif UDP in packet:
                 proto = "UDP"
                 sport = packet[UDP].sport
                 dport = packet[UDP].dport
-                info = (
-                    f"Src Port: {sport} -> Dst Port: {dport} Length: {packet[UDP].len}"
-                )
+                if sport == 53 or dport == 53:
+                    info = f"DNS Query/Response: {sport} -> {dport}"
+                else:
+                    info = f"Src Port: {sport} -> Dst Port: {dport} Length: {packet[UDP].len}"
                 self.stats["udp_total"] += 1
 
             elif ICMP in packet:
                 proto = "ICMP"
-                info = f"Type: {packet[ICMP].type} Code: {packet[ICMP].code}"
+                icmp_type = packet[ICMP].type
+                icmp_code = packet[ICMP].code
+                type_desc = ICMP_TYPES.get(icmp_type, f"Type {icmp_type}")
+                if icmp_type == 8: # Echo Request
+                    info = f"{type_desc} (ping)"
+                elif icmp_type == 0: # Echo Reply
+                    info = f"{type_desc} (pong)"
+                else:
+                    info = f"{type_desc} (Code: {icmp_code})"
                 self.stats["icmp_total"] += 1
 
             else:

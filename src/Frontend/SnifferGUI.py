@@ -58,6 +58,14 @@ class SnifferGUI(tk.Tk):
         self.tree.column("Info", width=400)
         self.tree.bind("<<TreeviewSelect>>", self.show_packet_details)
 
+        # The tag name must match the protocol string from the backend
+        self.tree.tag_configure("TCP", background="#e0f0ff")  # Light Blue
+        self.tree.tag_configure("UDP", background="#e0ffe0")  # Light Green
+        self.tree.tag_configure("ICMP", background="#ffe0e0") # Light Red/Pink
+        self.tree.tag_configure("ARP", background="#fffde0")   # Light Yellow
+        self.tree.tag_configure("HTTP", background="#d0ffff")  # Light Cyan
+        self.tree.tag_configure("HTTPS", background="#e0d0ff") # Light Purple
+
         # --- Packet Details Display ---
         self.details_frame = ttk.LabelFrame(self, text="Packet Details")
         self.details_text = scrolledtext.ScrolledText(
@@ -120,9 +128,13 @@ class SnifferGUI(tk.Tk):
         idx = len(self.backend.captured_packets)
         if idx == 0:
             return
+        
+        # Get the latest packet's summary and protocol
         summary = self.backend.captured_packets[-1][0]
-        self.tree.insert("", "end", values=(idx,) + summary)
-        # 不再保存具体信息
+        protocol_tag = summary[3]  # The protocol string (e.g., "TCP", "UDP") is the tag
+
+        # Insert into treeview with the corresponding tag
+        self.tree.insert("", "end", values=(idx,) + summary, tags=(protocol_tag,))
 
     def show_packet_details(self, event):
         """Displays detailed info for the selected packet."""
