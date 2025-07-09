@@ -6,7 +6,7 @@ from scapy.layers.inet import IP, TCP, UDP, ICMP
 import threading
 import datetime
 import platform
-import re
+from pyparsing import Word, alphas, alphanums, oneOf, infixNotation, opAssoc, ParserElement, Literal, ParseException, Group
 
 # --- Backend Logic ---
 
@@ -194,10 +194,55 @@ class SnifferBackend:
     
     def match(self, summary, expr=""):
         """
-        Under development
+        Matches a packet summary against a filter expression and raise ValueError if the expression is invalid.
+        Format: key=value, with logical operators: and, or, not, and parentheses
+        Keys can be "proto", "src", "dst".
+        Example: "not (proto=TCP or src=192.168.1.1) and dst=8.8.8.8"
         """
-        return True
-        
+        if not expr or not expr.strip():
+            return True
+
+        ParserElement.enablePackrat()
+
+        # Define the grammar for the filter expression
+        key = oneOf("proto src dst")
+        value = Word(alphanums + ".:")
+        cond = key + Literal("=").suppress() + value
+
+        # Define the parse action for the condition
+        def cond_action(tokens):
+            k, v = tokens[0], tokens[1]
+            if k == "proto":
+                # Case insensitive
+                return str(summary[3]).lower() == v.lower()
+            elif k == "src":
+                return v in str(summary[1])
+            elif k == "dst":
+                return v in str(summary[2])
+            else:
+                raise ValueError(f"Invalid key in filter expression: {k}")
+        cond.setParseAction(cond_action)
+
+        # Define logical operators
+        and_op = Literal("and") | "&&"
+        or_op = Literal("or") | "||"
+        not_op = Literal("not") | "!"
+
+        expr_parser = infixNotation(
+            cond,
+            [
+                (not_op, 1, opAssoc.RIGHT, lambda t: not t[0][1]),
+                (and_op, 2, opAssoc.LEFT, lambda t: t[0][0] and t[0][2]),
+                (or_op, 2, opAssoc.LEFT, lambda t: t[0][0] or t[0][2]),
+            ]
+        )
+
+        try:
+            result = expr_parser.parseString(expr, parseAll=True)[0]
+            return bool(result)
+        except ParseException as e:
+            raise ValueError(f"Invalid filter expression: {e}\nExpression: {expr}")
+
     # To be implemented in SnifferGUI
     def query_packets(self, expr=""):
         """
