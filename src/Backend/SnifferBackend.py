@@ -3,6 +3,7 @@ from tkinter import ttk, scrolledtext, messagebox, filedialog
 import scapy.all as scapy
 from scapy.layers.l2 import Ether, ARP
 from scapy.layers.inet import IP, TCP, UDP, ICMP
+from scapy.utils import PcapWriter
 import threading
 import datetime
 import platform
@@ -217,7 +218,6 @@ class SnifferBackend:
         if 0 <= packet_id < len(self.captured_packets):
             summary = self.captured_packets[packet_id][0]
             proto = summary[3]
-            # 分层递减
             if proto == "HTTP":
                 self.stats["http_total"] -= 1
                 self.stats["tcp_total"] -= 1
@@ -289,3 +289,42 @@ class SnifferBackend:
         pkts = scapy.rdpcap(file_path)
         for packet in pkts:
             self._process_packet(packet)
+
+    def reassemble_tcp_streams(self):
+        """
+        对捕获的 TCP 报文进行流重组，返回每个会话的完整数据（按四元组分组）。
+        返回值: dict，key为(src_ip, src_port, dst_ip, dst_port)，value为bytes数据流
+        """
+        streams = {}
+        for pkt in self.captured_packets_raw:
+            if TCP in pkt and IP in pkt:
+                src = pkt[IP].src
+                dst = pkt[IP].dst
+                sport = pkt[TCP].sport
+                dport = pkt[TCP].dport
+                key = (src, sport, dst, dport)
+                # 只重组从src:port到dst:port的单向流
+                if key not in streams:
+                    streams[key] = b""
+                # 拼接TCP负载
+                payload = bytes(pkt[TCP].payload)
+                if payload:
+                    streams[key] += payload
+        return streams
+
+    def get_tcp_stream_summary(self):
+        """
+        返回所有TCP流的简要信息，供前端展示
+        """
+        streams = self.reassemble_tcp_streams()
+        summary = []
+        for key, data in streams.items():
+            src, sport, dst, dport = key
+            summary.append({
+                "src": src,
+                "sport": sport,
+                "dst": dst,
+                "dport": dport,
+                "length": len(data)
+            })
+        return summary
