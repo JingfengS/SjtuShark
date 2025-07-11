@@ -6,7 +6,7 @@ from scapy.layers.inet import IP, TCP, UDP, ICMP
 import threading
 import datetime
 import platform
-import re
+from pyparsing import Word, alphas, alphanums, oneOf, infixNotation, opAssoc, ParserElement, Literal, ParseException, Group
 
 # --- Backend Logic ---
 
@@ -194,13 +194,11 @@ class SnifferBackend:
 
     def match(self, summary, expr=""):
         """
-        Under development
+        Matches a packet summary against a filter expression and raise ValueError if the expression is invalid.
+        Format: key=value, with logical operators: and, or, not, and parentheses
+        Keys can be "proto", "src", "dst".
+        Example: "not (proto=TCP or src=192.168.1.1) and dst=8.8.8.8"
         """
-<<<<<<< Updated upstream
-        return True
-        
-    # To be implemented in SnifferGUI
-=======
         if not expr or not expr.strip():
             return True
 
@@ -244,7 +242,6 @@ class SnifferBackend:
         except ParseException as e:
             raise ValueError(f"Invalid filter expression: {e}\nExpression: {expr}")
 
->>>>>>> Stashed changes
     def query_packets(self, expr=""):
         """
         Query filter
@@ -262,7 +259,6 @@ class SnifferBackend:
         if 0 <= packet_id < len(self.captured_packets):
             summary = self.captured_packets[packet_id][0]
             proto = summary[3]
-            # 分层递减
             if proto == "HTTP":
                 self.stats["http_total"] -= 1
                 self.stats["tcp_total"] -= 1
@@ -332,9 +328,6 @@ class SnifferBackend:
         self.clear_captured_packets()
         pkts = scapy.rdpcap(file_path)
         for packet in pkts:
-<<<<<<< Updated upstream
-            self._process_packet(packet)
-=======
             self._process_packet(packet)
 
     def reassemble_tcp_streams(self, packets):
@@ -365,4 +358,3 @@ class SnifferBackend:
             {"src": src, "sport": sport, "dst": dst, "dport": dport, "length": len(data)}
             for (src, sport, dst, dport), data in streams.items()
         ]
->>>>>>> Stashed changes
