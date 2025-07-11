@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 from ..Backend.SnifferBackend import SnifferBackend
+
 class SnifferGUI(tk.Tk):
     """
     Manages the Graphical User Interface using Tkinter.
@@ -21,7 +22,6 @@ class SnifferGUI(tk.Tk):
         # Populate the interface dropdown
         self._populate_interfaces()
 
-
     def _create_widgets(self):
         """Creates all the GUI widgets."""
         # --- Controls ---
@@ -37,6 +37,29 @@ class SnifferGUI(tk.Tk):
             command=self.stop_capture,
             state="disabled",
         )
+        
+        # New buttons for additional functionality
+        self.filter_button = ttk.Button(
+            self.controls_frame, 
+            text="Filter", 
+            command=self.show_filter_dialog
+        )
+        self.search_button = ttk.Button(
+            self.controls_frame, 
+            text="Search", 
+            command=self.show_search_dialog
+        )
+        self.logs_button = ttk.Button(
+            self.controls_frame, 
+            text="View Logs", 
+            command=self.show_logs
+        )
+        self.reassemble_button = ttk.Button(
+            self.controls_frame, 
+            text="Reassemble", 
+            command=self.packet_reassembly
+        )
+        
         self.save_button = ttk.Button(
             self.controls_frame, text="Save to TXT", command=self.save_to_txt
         )
@@ -79,6 +102,13 @@ class SnifferGUI(tk.Tk):
         self.iface_combo.pack(side="left", padx=5, pady=5)
         self.start_button.pack(side="left", padx=5, pady=5)
         self.stop_button.pack(side="left", padx=5, pady=5)
+        
+        # Pack the new buttons
+        self.filter_button.pack(side="left", padx=5, pady=5)
+        self.search_button.pack(side="left", padx=5, pady=5)
+        self.logs_button.pack(side="left", padx=5, pady=5)
+        self.reassemble_button.pack(side="left", padx=5, pady=5)
+        
         self.save_button.pack(side="left", padx=5, pady=5)
         self.exit_button.pack(side="right", padx=5, pady=5)
 
@@ -88,6 +118,161 @@ class SnifferGUI(tk.Tk):
         self.details_frame.pack(expand=True, fill="both", padx=10, pady=10)
         self.details_text.pack(expand=True, fill="both")
 
+    # New methods for the additional functionality
+    def show_filter_dialog(self):
+        """Show dialog for packet filtering."""
+        filter_dialog = tk.Toplevel(self)
+        filter_dialog.title("Packet Filter")
+        filter_dialog.geometry("450x150")
+        filter_dialog.transient(self)
+        filter_dialog.grab_set()
+
+        ttk.Label(filter_dialog, text="Enter filter expression (e.g., 'proto=TCP and src=192.168.1.1'):").pack(pady=10)
+        self.filter_entry = ttk.Entry(filter_dialog, width=55)
+        self.filter_entry.pack(pady=5)
+        self.filter_entry.focus()
+
+        def _apply():
+            expr = self.filter_entry.get().strip()
+            try:
+                self.apply_filter(expr)
+                filter_dialog.destroy()
+            except ValueError as e:
+                messagebox.showerror("Filter Error", str(e), parent=filter_dialog)
+
+        ttk.Button(filter_dialog, text="Apply Filter", command=_apply).pack(side="left", padx=20, pady=10)
+        ttk.Button(filter_dialog, text="Clear Filter", command=self.clear_filter).pack(side="right", padx=20, pady=10)
+
+    def apply_filter(self, filter_expr):
+        """Apply the filter to captured packets."""
+        if not filter_expr:
+            self.clear_filter()
+            return
+
+        filtered_packets = self.backend.query_packets(filter_expr)
+        self.tree.delete(*self.tree.get_children())
+        for idx, (summary, _) in enumerate(filtered_packets):
+            self.tree.insert("", "end", values=(idx + 1,) + summary, tags=(summary[3],))
+        messagebox.showinfo("Filter Applied", f"Showing {len(filtered_packets)} packets matching filter")
+
+    def clear_filter(self):
+        """Clear any applied filters."""
+        self.tree.delete(*self.tree.get_children())
+        for idx, (summary, _) in enumerate(self.backend.captured_packets):
+            self.tree.insert("", "end", values=(idx + 1,) + summary, tags=(summary[3],))
+        messagebox.showinfo("Filter Cleared", "Showing all captured packets")
+
+    def show_search_dialog(self):
+        """Show dialog for searching packets."""
+        search_dialog = tk.Toplevel(self)
+        search_dialog.title("Packet Search")
+        search_dialog.geometry("400x130")
+        search_dialog.transient(self)
+        search_dialog.grab_set()
+
+        ttk.Label(search_dialog, text="Search for:").pack(pady=10)
+        self.search_entry = ttk.Entry(search_dialog, width=50)
+        self.search_entry.pack(pady=5)
+        self.search_entry.focus()
+
+        def _do_search():
+            keyword = self.search_entry.get().strip()
+            if not keyword:
+                return
+            self.search_packets(keyword)
+            search_dialog.destroy()
+
+        ttk.Button(search_dialog, text="Search", command=_do_search).pack(pady=10)
+
+    def search_packets(self, search_term):
+        """Search through captured packets."""
+        found_items = []
+        search_term = search_term.lower()
+        for item in self.tree.get_children():
+            values = self.tree.item(item)["values"]
+            if any(search_term in str(value).lower() for value in values):
+                found_items.append(item)
+
+        if not found_items:
+            messagebox.showinfo("Search Results", "No matching packets found")
+            return
+
+        # Highlight found items
+        self.tree.selection_set(found_items)
+        self.tree.focus(found_items[0])
+        self.tree.see(found_items[0])
+        messagebox.showinfo("Search Results", f"Found {len(found_items)} matching packets")
+
+    def show_logs(self):
+        """Display capture logs in a new window."""
+        log_window = tk.Toplevel(self)
+        log_window.title("Capture Logs")
+        log_window.geometry("600x400")
+        
+        log_text = scrolledtext.ScrolledText(log_window, wrap=tk.WORD)
+        log_text.pack(expand=True, fill="both", padx=10, pady=10)
+        
+        # Add some sample log data - in a real app this would come from actual logging
+        log_text.insert(tk.END, "=== Capture Log ===\n\n")
+        log_text.insert(tk.END, f"Interface: {self.iface_combo.get()}\n")
+        log_text.insert(tk.END, f"Total packets: {len(self.backend.captured_packets)}\n")
+        log_text.insert(tk.END, "\nPacket Statistics:\n")
+        stats = self.backend.get_stats()
+        for proto, count in stats.items():
+            log_text.insert(tk.END, f"{proto}: {count}\n")
+        
+        log_text.config(state="disabled")
+
+    def packet_reassembly(self):
+        """Show dialog for packet reassembly options."""
+        reassembly_dialog = tk.Toplevel(self)
+        reassembly_dialog.title("Packet Reassembly")
+        reassembly_dialog.geometry("400x300")
+        
+        ttk.Label(reassembly_dialog, text="Select reassembly options:").pack(pady=10)
+        
+        self.reassembly_var = tk.StringVar(value="tcp")
+        ttk.Radiobutton(reassembly_dialog, text="TCP Stream", 
+                       variable=self.reassembly_var, value="tcp").pack(anchor="w", padx=20)
+        ttk.Radiobutton(reassembly_dialog, text="UDP Stream", 
+                       variable=self.reassembly_var, value="udp").pack(anchor="w", padx=20)
+        ttk.Radiobutton(reassembly_dialog, text="HTTP Session", 
+                       variable=self.reassembly_var, value="http").pack(anchor="w", padx=20)
+        
+        ttk.Button(reassembly_dialog, text="Reassemble", 
+                  command=self.perform_reassembly).pack(pady=20)
+
+    def perform_reassembly(self):
+        """Perform the selected packet reassembly."""
+        method = self.reassembly_var.get()
+        if method == "tcp":
+            # Perform TCP stream reassembly
+           
+            summary = self.backend.get_tcp_stream_summary()
+            if not summary:
+                messagebox.showinfo("Reassembly", "No TCP streams found for reassembly")
+                return
+
+            # Display the reassembled streams
+            reassembly_window = tk.Toplevel(self)
+            reassembly_window.title("TCP Stream Reassembly")
+            reassembly_window.geometry("800x600")
+
+            text = scrolledtext.ScrolledText(reassembly_window, wrap=tk.WORD)
+            text.pack(expand=True, fill="both", padx=10, pady=10)
+
+            text.insert(tk.END, "=== TCP Stream Reassembly ===\n\n")
+            for stream in summary:
+                text.insert(tk.END, f"Stream: {stream['src']}:{stream['sport']} -> {stream['dst']}:{stream['dport']}\n")
+                text.insert(tk.END, f"Length: {stream['length']} bytes\n")
+                text.insert(tk.END, "-" * 50 + "\n")
+            text.config(state="disabled")
+        else:
+            messagebox.showinfo("Reassembly", f"Packet reassembly for {method.upper()} would be performed here.\n"
+                              "This is a placeholder - actual implementation would require\n"
+                              "processing the raw packets in the backend.")
+
+    # Rest of the existing methods remain unchanged...
     def _populate_interfaces(self):
         """Gets and displays network interfaces in the dropdown."""
         interfaces = self.backend.get_network_interfaces()

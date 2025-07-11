@@ -21,6 +21,7 @@ ICMP_TYPES = {
     5: "Redirect", 8: "Echo Request", 11: "Time Exceeded",
 }
 # <<< END ADDED SECTION >>>
+
 class SnifferBackend:
     """
     Handles all the packet sniffing and processing logic.
@@ -32,7 +33,7 @@ class SnifferBackend:
         self.gui_callback = gui_callback
         self.captured_packets = []  # List to store captured packets
         self.captured_packets_raw = []  # List to store raw captured packets
-        self.stats = { # Dictionary to store statistics
+        self.stats = {  # Dictionary to store statistics
             "ip_total": 0,
             "tcp_total": 0,
             "udp_total": 0,
@@ -137,7 +138,7 @@ class SnifferBackend:
                 raw = bytes(packet[TCP].payload)
                 if raw:
                     if sport == 80 or dport == 80:
-                         if raw.startswith((b"GET", b"POST", b"HTTP", b"PUT", b"DELETE", b"HEAD")):
+                        if raw.startswith((b"GET", b"POST", b"HTTP", b"PUT", b"DELETE", b"HEAD")):
                             proto = "HTTP"
                             try:
                                 http_text = raw.decode(errors="ignore")
@@ -164,9 +165,9 @@ class SnifferBackend:
                 icmp_type = packet[ICMP].type
                 icmp_code = packet[ICMP].code
                 type_desc = ICMP_TYPES.get(icmp_type, f"Type {icmp_type}")
-                if icmp_type == 8: # Echo Request
+                if icmp_type == 8:  # Echo Request
                     info = f"{type_desc} (ping)"
-                elif icmp_type == 0: # Echo Reply
+                elif icmp_type == 0:  # Echo Reply
                     info = f"{type_desc} (pong)"
                 else:
                     info = f"{type_desc} (Code: {icmp_code})"
@@ -191,14 +192,59 @@ class SnifferBackend:
         # Use the callback to update the GUI safely from this thread
         self.gui_callback(packet_summary, packet_details)
 
-    
     def match(self, summary, expr=""):
         """
         Under development
         """
+<<<<<<< Updated upstream
         return True
         
     # To be implemented in SnifferGUI
+=======
+        if not expr or not expr.strip():
+            return True
+
+        ParserElement.enablePackrat()
+
+        # 定义语法
+        key = oneOf("proto src dst")
+        value = Word(alphanums + ".:")
+        cond = key + Literal("=").suppress() + value
+
+        def cond_action(tokens):
+            k, v = tokens[0], tokens[1]
+            v = v.lower()
+            if k == "proto":
+                return summary[0][3].lower() == v  # summary[0] 是 5 元组
+            elif k == "src":
+                return v in summary[0][1].lower()
+            elif k == "dst":
+                return v in summary[0][2].lower()
+            else:
+                raise ValueError(f"Invalid key in filter expression: {k}")
+        cond.setParseAction(cond_action)
+
+        # 逻辑运算符
+        and_op = Literal("and") | "&&"
+        or_op = Literal("or") | "||"
+        not_op = Literal("not") | "!"
+
+        expr_parser = infixNotation(
+            cond,
+            [
+                (not_op, 1, opAssoc.RIGHT, lambda t: not t[0][1]),
+                (and_op, 2, opAssoc.LEFT, lambda t: t[0][0] and t[0][2]),
+                (or_op, 2, opAssoc.LEFT, lambda t: t[0][0] or t[0][2]),
+            ]
+        )
+
+        try:
+            result = expr_parser.parseString(expr, parseAll=True)[0]
+            return bool(result)
+        except ParseException as e:
+            raise ValueError(f"Invalid filter expression: {e}\nExpression: {expr}")
+
+>>>>>>> Stashed changes
     def query_packets(self, expr=""):
         """
         Query filter
@@ -209,7 +255,6 @@ class SnifferBackend:
                 results.append(summary)
         return results
 
-    # To be implemented in SnifferGUI
     def delete_packet(self, packet_id):
         """
         Deletes a packet by its ID.
@@ -245,8 +290,7 @@ class SnifferBackend:
             del self.captured_packets_raw[packet_id]
             return True
         return False
-    
-    # To be implemented in SnifferGUI
+
     def clear_captured_packets(self):
         """
         Clears the captured packets list.
@@ -256,7 +300,7 @@ class SnifferBackend:
         for k in self.stats:
             self.stats[k] = 0
         return True
-    
+
     def save_captured_packets(self, file_path):
         """
         Saves all captured packet summaries to a text file.
@@ -273,7 +317,7 @@ class SnifferBackend:
 
     def get_stats(self):
         return dict(self.stats)
-    
+
     def export_to_pcap(self, file_path):
         """
         Exports captured packets to a pcap file.
@@ -288,4 +332,37 @@ class SnifferBackend:
         self.clear_captured_packets()
         pkts = scapy.rdpcap(file_path)
         for packet in pkts:
+<<<<<<< Updated upstream
             self._process_packet(packet)
+=======
+            self._process_packet(packet)
+
+    def reassemble_tcp_streams(self, packets):
+        """
+        Reassembles TCP streams from given packets and returns a dictionary where keys are tuples of (src_ip, src_port, dst_ip, dst_port)
+        """
+        streams = {}
+        for pkt in packets:
+            if TCP in pkt and IP in pkt:
+                src = pkt[IP].src
+                dst = pkt[IP].dst
+                sport = pkt[TCP].sport
+                dport = pkt[TCP].dport
+                key = (src, sport, dst, dport)
+                if key not in streams:
+                    streams[key] = b""
+                payload = bytes(pkt[TCP].payload)
+                if payload:
+                    streams[key] += payload
+        return streams
+
+    def get_tcp_stream_summary(self):
+        """
+        Returns a summary of TCP streams.
+        """
+        streams = self.reassemble_tcp_streams(self.captured_packets_raw)
+        return [
+            {"src": src, "sport": sport, "dst": dst, "dport": dport, "length": len(data)}
+            for (src, sport, dst, dport), data in streams.items()
+        ]
+>>>>>>> Stashed changes
