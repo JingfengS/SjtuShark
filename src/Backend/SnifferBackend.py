@@ -7,6 +7,8 @@ import threading
 import datetime
 import platform
 from pyparsing import Word, alphas, alphanums, oneOf, infixNotation, opAssoc, ParserElement, Literal, ParseException, Group
+import zlib
+from bs4 import BeautifulSoup
 
 # --- Backend Logic ---
 
@@ -33,6 +35,7 @@ class SnifferBackend:
         self.gui_callback = gui_callback
         self.captured_packets = []  # List to store captured packets
         self.captured_packets_raw = []  # List to store raw captured packets
+        self.tcp_streams = {}  # Dictionary to store TCP streams
         self.stats = {  # Dictionary to store statistics
             "ip_total": 0,
             "tcp_total": 0,
@@ -134,21 +137,31 @@ class SnifferBackend:
                 info = f"{sport} -> {dport} [{flag_str}]"
                 self.stats["tcp_total"] += 1
 
-                # HTTP/HTTPS
-                raw = bytes(packet[TCP].payload)
-                if raw:
-                    if sport == 80 or dport == 80:
-                        if raw.startswith((b"GET", b"POST", b"HTTP", b"PUT", b"DELETE", b"HEAD")):
-                            proto = "HTTP"
-                            try:
-                                http_text = raw.decode(errors="ignore")
-                                first_line = http_text.split("\r\n")[0]
-                                info = f"HTTP Request: {first_line}"
-                            except:
-                                info = "HTTP Packet (undecoded)"
-                    elif sport == 443 or dport == 443 or raw.startswith(b"\x16\x03"):
-                        proto = "HTTPS"
-                        info = "Encrypted TLS/SSL Data"
+                 # --- MODIFIED: Handle TCP Stream Reassembly ---
+                payload = bytes(packet[TCP].payload)
+                if payload:
+                    # Create a key for the stream, ensuring client->server and server->client packets
+                    # map to the same stream. We sort the (IP, port) tuples to make the key consistent.
+                    stream_key = tuple(sorted(((src_addr, sport), (dst_addr, dport))))
+                    if stream_key not in self.tcp_streams:
+                        self.tcp_streams[stream_key] = b''
+                    self.tcp_streams[stream_key] += payload
+
+                # Check for HTTP/HTTPS
+                raw_payload_str = payload.decode(errors='ignore').upper()
+                if sport == 80 or dport == 80:
+                    if "HTTP" in raw_payload_str or any(verb in raw_payload_str for verb in ["GET", "POST", "PUT"]):
+                        proto = "HTTP"
+                        try:
+                            first_line = payload.decode(errors='ignore').split("\r\n")[0]
+                            info = f"HTTP Packet: {first_line}"
+                            self.stats["http_total"] += 1
+                        except:
+                            info = "HTTP Packet (undecoded)"
+                elif sport == 443 or dport == 443 or payload.startswith(b"\x16\x03"):
+                    proto = "HTTPS"
+                    info = "Encrypted TLS/SSL Data"
+                    self.stats["https_total"] += 1
 
             elif UDP in packet:
                 proto = "UDP"
@@ -293,6 +306,7 @@ class SnifferBackend:
         """
         self.captured_packets.clear()
         self.captured_packets_raw.clear()
+        self.tcp_streams.clear()
         for k in self.stats:
             self.stats[k] = 0
         return True
@@ -330,31 +344,82 @@ class SnifferBackend:
         for packet in pkts:
             self._process_packet(packet)
 
-    def reassemble_tcp_streams(self, packets):
-        """
-        Reassembles TCP streams from given packets and returns a dictionary where keys are tuples of (src_ip, src_port, dst_ip, dst_port)
-        """
-        streams = {}
-        for pkt in packets:
-            if TCP in pkt and IP in pkt:
-                src = pkt[IP].src
-                dst = pkt[IP].dst
-                sport = pkt[TCP].sport
-                dport = pkt[TCP].dport
-                key = (src, sport, dst, dport)
-                if key not in streams:
-                    streams[key] = b""
-                payload = bytes(pkt[TCP].payload)
-                if payload:
-                    streams[key] += payload
-        return streams
-
     def get_tcp_stream_summary(self):
         """
         Returns a summary of TCP streams.
         """
-        streams = self.reassemble_tcp_streams(self.captured_packets_raw)
-        return [
-            {"src": src, "sport": sport, "dst": dst, "dport": dport, "length": len(data)}
-            for (src, sport, dst, dport), data in streams.items()
-        ]
+        summary = []
+        # self.tcp_streams 的键是排序后的元组：((ip1, port1), (ip2, port2))
+        for stream_key, data in self.tcp_streams.items():
+            # 解包 stream_key 来获取源和目标信息
+            (addr1, port1), (addr2, port2) = stream_key
+            summary.append({
+                "src": addr1,
+                "sport": port1,
+                "dst": addr2,
+                "dport": port2,
+                "length": len(data)
+            })
+        return summary
+
+    # --- ADDED: New methods for data reassembly and parsing ---
+
+    def get_tcp_stream_content(self, packet_id):
+        """
+        Finds the full TCP stream for a given packet and returns the raw bytes.
+        """
+        if not (0 <= packet_id < len(self.captured_packets_raw)):
+            return None, None
+
+        packet = self.captured_packets_raw[packet_id]
+        if not packet.haslayer(TCP):
+            return None, None
+
+        sport = packet[TCP].sport
+        dport = packet[TCP].dport
+        src_addr = packet[IP].src
+        dst_addr = packet[IP].dst
+
+        # Find the corresponding stream key
+        stream_key = tuple(sorted(((src_addr, sport), (dst_addr, dport))))
+        
+        if stream_key in self.tcp_streams:
+            return self.tcp_streams[stream_key], stream_key
+        return None, None
+
+    def get_http_content(self, raw_data):
+        """
+        Parses raw byte data, checks for HTTP, and returns decoded/decompressed content.
+        """
+        if not raw_data:
+            return "No data in stream."
+
+        try:
+            # Try to decode as HTTP response
+            headers_part, body = raw_data.split(b"\r\n\r\n", 1)
+            headers_str = headers_part.decode("utf-8", errors="ignore")
+            headers = dict(line.split(": ", 1) for line in headers_str.split("\r\n")[1:] if ": " in line)
+
+            content = body
+            # Handle Gzip decompression
+            if headers.get("Content-Encoding") == "gzip":
+                try:
+                    content = zlib.decompress(body, 16 + zlib.MAX_WBITS)
+                except zlib.error:
+                    return "[Gzip Decompression Failed]\n\n" + body.decode('latin-1')
+            
+            # Check for HTML and pretty-print it
+            if "text/html" in headers.get("Content-Type", ""):
+                try:
+                    soup = BeautifulSoup(content, "html.parser")
+                    return soup.prettify()
+                except Exception:
+                    return content.decode('utf-8', errors='ignore')
+
+            # Return plain text or other content types
+            return content.decode('utf-8', errors='ignore')
+
+        except (ValueError, UnicodeDecodeError):
+            # If splitting or decoding fails, it might be a request or not HTTP at all.
+            # Return the raw data representation.
+            return raw_data.decode('latin-1', errors='ignore')

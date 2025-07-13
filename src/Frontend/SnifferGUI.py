@@ -153,14 +153,15 @@ class SnifferGUI(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         for idx, (summary, _) in enumerate(filtered_packets):
             self.tree.insert("", "end", values=(idx + 1,) + summary, tags=(summary[3],))
-        messagebox.showinfo("Filter Applied", f"Showing {len(filtered_packets)} packets matching filter")
+        if not filtered_packets:
+            messagebox.showinfo("Filter Results", "No packets match the filter criteria")
+            return
 
     def clear_filter(self):
         """Clear any applied filters."""
         self.tree.delete(*self.tree.get_children())
         for idx, (summary, _) in enumerate(self.backend.captured_packets):
             self.tree.insert("", "end", values=(idx + 1,) + summary, tags=(summary[3],))
-        messagebox.showinfo("Filter Cleared", "Showing all captured packets")
 
     def show_search_dialog(self):
         """Show dialog for searching packets."""
