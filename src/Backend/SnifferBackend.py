@@ -6,7 +6,18 @@ from scapy.layers.inet import IP, TCP, UDP, ICMP
 import threading
 import datetime
 import platform
-from pyparsing import Word, alphas, alphanums, oneOf, infixNotation, opAssoc, ParserElement, Literal, ParseException, Group
+from pyparsing import (
+    Word,
+    alphas,
+    alphanums,
+    oneOf,
+    infixNotation,
+    opAssoc,
+    ParserElement,
+    Literal,
+    ParseException,
+    Group,
+)
 import zlib
 from bs4 import BeautifulSoup
 
@@ -14,15 +25,26 @@ from bs4 import BeautifulSoup
 
 # <<< ADDED: Dictionaries for human-readable descriptions >>>
 TCP_FLAGS = {
-    "F": "FIN", "S": "SYN", "R": "RST", "P": "PSH",
-    "A": "ACK", "U": "URG", "E": "ECE", "C": "CWR",
+    "F": "FIN",
+    "S": "SYN",
+    "R": "RST",
+    "P": "PSH",
+    "A": "ACK",
+    "U": "URG",
+    "E": "ECE",
+    "C": "CWR",
 }
 
 ICMP_TYPES = {
-    0: "Echo Reply", 3: "Destination Unreachable", 4: "Source Quench",
-    5: "Redirect", 8: "Echo Request", 11: "Time Exceeded",
+    0: "Echo Reply",
+    3: "Destination Unreachable",
+    4: "Source Quench",
+    5: "Redirect",
+    8: "Echo Request",
+    11: "Time Exceeded",
 }
 # <<< END ADDED SECTION >>>
+
 
 class SnifferBackend:
     """
@@ -36,6 +58,9 @@ class SnifferBackend:
         self.captured_packets = []  # List to store captured packets
         self.captured_packets_raw = []  # List to store raw captured packets
         self.tcp_streams = {}  # Dictionary to store TCP streams
+        # Key 现在是单向的 (src_ip, src_port, dst_ip, dport)
+        # Value 是一个字典，包含重组所需的状态
+
         self.stats = {  # Dictionary to store statistics
             "ip_total": 0,
             "tcp_total": 0,
@@ -63,6 +88,7 @@ class SnifferBackend:
             try:
                 # This provides more descriptive names on Windows
                 from scapy.arch.windows import get_windows_if_list
+
                 win_ifaces = get_windows_if_list()
                 return [iface["name"] for iface in win_ifaces if "name" in iface]
             except ImportError:
@@ -85,7 +111,9 @@ class SnifferBackend:
                 iface=interface,
                 prn=self._process_packet,
                 stop_filter=self._stop_sniffing_filter,
-                filter=capture_filter if capture_filter else None,  # Sniff with filter if provided, to be implemented in SnifferGUI
+                filter=(
+                    capture_filter if capture_filter else None
+                ),  # Sniff with filter if provided, to be implemented in SnifferGUI
             ),
             daemon=True,
         )
@@ -130,38 +158,61 @@ class SnifferBackend:
             self.stats["ip_total"] += 1
 
             if TCP in packet:
+                # --- THIS ENTIRE BLOCK IS REWRITTEN FOR TRUE REASSEMBLY ---
                 proto = "TCP"
                 sport = packet[TCP].sport
                 dport = packet[TCP].dport
-                flag_str = "".join([TCP_FLAGS[f] for f in str(packet[TCP].flags)])
-                info = f"{sport} -> {dport} [{flag_str}]"
+                payload = bytes(packet[TCP].payload)
+
+                # TCP重组需要为每个方向的流维护独立的状态
+                stream_key = (src_addr, sport, dst_addr, dport)
+
+                # 如果是新流，初始化其状态
+                if stream_key not in self.tcp_streams:
+                    self.tcp_streams[stream_key] = {
+                        "expected_seq": packet[TCP].seq,  # 初始期望值
+                        "buffer": {},  # 乱序包的缓存
+                        "data": b"",  # 重组后的数据
+                    }
+
+                stream = self.tcp_streams[stream_key]
+
+                # 如果是期望的包，或流刚刚初始化
+                if packet[TCP].seq == stream["expected_seq"]:
+                    # 1. 将当前包的载荷附加到数据中
+                    stream["data"] += payload
+                    stream["expected_seq"] += len(payload)
+
+                    # 2. 检查缓存中是否有可以“解锁”的、紧随其后的包
+                    while stream["expected_seq"] in stream["buffer"]:
+                        buffered_payload = stream["buffer"].pop(stream["expected_seq"])
+                        stream["data"] += buffered_payload
+                        stream["expected_seq"] += len(buffered_payload)
+
+                # 如果是乱序（未来）的包，并且有载荷，则放入缓存
+                elif payload and packet[TCP].seq > stream["expected_seq"]:
+                    # 只有当这个包我们没有收到过时才缓存
+                    if packet[TCP].seq not in stream["buffer"]:
+                        stream["buffer"][packet[TCP].seq] = payload
+
+                # --- 更新GUI显示信息 (info) ---
+                flag_str = "".join(
+                    [TCP_FLAGS.get(f, f) for f in str(packet[TCP].flags)]
+                )
+                info = f"{sport} -> {dport} [{flag_str}] Seq: {packet[TCP].seq} Ack: {packet[TCP].ack}"
                 self.stats["tcp_total"] += 1
 
-                 # --- MODIFIED: Handle TCP Stream Reassembly ---
-                payload = bytes(packet[TCP].payload)
-                if payload:
-                    # Create a key for the stream, ensuring client->server and server->client packets
-                    # map to the same stream. We sort the (IP, port) tuples to make the key consistent.
-                    stream_key = tuple(sorted(((src_addr, sport), (dst_addr, dport))))
-                    if stream_key not in self.tcp_streams:
-                        self.tcp_streams[stream_key] = b''
-                    self.tcp_streams[stream_key] += payload
-
-                # Check for HTTP/HTTPS
-                raw_payload_str = payload.decode(errors='ignore').upper()
+                # --- 更新协议判断逻辑 (HTTP/HTTPS) ---
+                # 这个判断逻辑本身可以保持不变
+                combined_data = stream["data"]  # 使用重组后的数据来判断
+                raw_payload_str = combined_data.decode(errors="ignore").upper()
                 if sport == 80 or dport == 80:
-                    if "HTTP" in raw_payload_str or any(verb in raw_payload_str for verb in ["GET", "POST", "PUT"]):
+                    if "HTTP" in raw_payload_str:  # 检查整个重组流
                         proto = "HTTP"
-                        try:
-                            first_line = payload.decode(errors='ignore').split("\r\n")[0]
-                            info = f"HTTP Packet: {first_line}"
-                            self.stats["http_total"] += 1
-                        except:
-                            info = "HTTP Packet (undecoded)"
-                elif sport == 443 or dport == 443 or payload.startswith(b"\x16\x03"):
-                    proto = "HTTPS"
-                    info = "Encrypted TLS/SSL Data"
-                    self.stats["https_total"] += 1
+                elif sport == 443 or dport == 443:
+                    # TLS握手通常在流的开始
+                    if combined_data.startswith(b"\x16\x03"):
+                        proto = "HTTPS"
 
             elif UDP in packet:
                 proto = "UDP"
@@ -201,7 +252,9 @@ class SnifferBackend:
         packet_summary = (timestamp, src_addr, dst_addr, proto, info)
         packet_details = packet.show(dump=True)  # Full packet details for the text view
         self.captured_packets_raw.append(packet)
-        self.captured_packets.append((packet_summary, packet_details))  # Save captured packets 
+        self.captured_packets.append(
+            (packet_summary, packet_details)
+        )  # Save captured packets
         # Use the callback to update the GUI safely from this thread
         self.gui_callback(packet_summary, packet_details)
 
@@ -233,6 +286,7 @@ class SnifferBackend:
                 return v in summary[0][2].lower()
             else:
                 raise ValueError(f"Invalid key in filter expression: {k}")
+
         cond.setParseAction(cond_action)
 
         # Define logical operators
@@ -246,7 +300,7 @@ class SnifferBackend:
                 (not_op, 1, opAssoc.RIGHT, lambda t: not t[0][1]),
                 (and_op, 2, opAssoc.LEFT, lambda t: t[0][0] and t[0][2]),
                 (or_op, 2, opAssoc.LEFT, lambda t: t[0][0] or t[0][2]),
-            ]
+            ],
         )
 
         try:
@@ -275,7 +329,7 @@ class SnifferBackend:
             if proto == "HTTP":
                 self.stats["http_total"] -= 1
                 self.stats["tcp_total"] -= 1
-                self.stats["ip_total"] -= 1 
+                self.stats["ip_total"] -= 1
             elif proto == "HTTPS":
                 self.stats["https_total"] -= 1
                 self.stats["tcp_total"] -= 1
@@ -346,27 +400,42 @@ class SnifferBackend:
 
     def get_tcp_stream_summary(self):
         """
-        Returns a summary of TCP streams.
+        modified: 从新的、真正的重组引擎中返回tcp会话的摘要。
+        这个函数会把双向流合并为一个会话进行统计。
         """
         summary = []
-        # self.tcp_streams 的键是排序后的元组：((ip1, port1), (ip2, port2))
-        for stream_key, data in self.tcp_streams.items():
-            # 解包 stream_key 来获取源和目标信息
-            (addr1, port1), (addr2, port2) = stream_key
-            summary.append({
-                "src": addr1,
-                "sport": port1,
-                "dst": addr2,
-                "dport": port2,
-                "length": len(data)
-            })
+        processed_streams = set()  # 用来存放已处理过的反向流key，避免重复计算
+
+        for stream_key, stream_obj in self.tcp_streams.items():
+            # 如果这个key是作为反向流被处理过的，就跳过
+            if stream_key in processed_streams:
+                continue
+
+            (src, sport, dst, dport) = stream_key
+            reverse_key = (dst, dport, src, sport)
+
+            # 计算会话双向的总数据长度
+            total_length = len(stream_obj["data"])
+            if reverse_key in self.tcp_streams:
+                total_length += len(self.tcp_streams[reverse_key]["data"])
+                # 将反向key加入已处理集合
+                processed_streams.add(reverse_key)
+
+            summary.append(
+                {
+                    "src": src,
+                    "sport": sport,
+                    "dst": dst,
+                    "dport": dport,
+                    "length": total_length,
+                }
+            )
         return summary
 
     # --- ADDED: New methods for data reassembly and parsing ---
-
     def get_tcp_stream_content(self, packet_id):
         """
-        Finds the full TCP stream for a given packet and returns the raw bytes.
+        MODIFIED: 查找一个数据包所属会话的双向数据流。
         """
         if not (0 <= packet_id < len(self.captured_packets_raw)):
             return None, None
@@ -375,17 +444,30 @@ class SnifferBackend:
         if not packet.haslayer(TCP):
             return None, None
 
-        sport = packet[TCP].sport
-        dport = packet[TCP].dport
-        src_addr = packet[IP].src
-        dst_addr = packet[IP].dst
+        # 定义会话的双向流key
+        key_forward = (
+            packet[IP].src,
+            packet[TCP].sport,
+            packet[IP].dst,
+            packet[TCP].dport,
+        )
+        key_reverse = (
+            packet[IP].dst,
+            packet[TCP].dport,
+            packet[IP].src,
+            packet[TCP].sport,
+        )
 
-        # Find the corresponding stream key
-        stream_key = tuple(sorted(((src_addr, sport), (dst_addr, dport))))
-        
-        if stream_key in self.tcp_streams:
-            return self.tcp_streams[stream_key], stream_key
-        return None, None
+        # 从两个方向收集数据
+        conversation_data = b""
+        if key_forward in self.tcp_streams:
+            conversation_data += self.tcp_streams[key_forward]["data"]
+        if key_reverse in self.tcp_streams:
+            # 在实际的HTTP解析中，将两个方向的数据混合可能不理想
+            # 但为了显示，我们这里将它们拼接
+            conversation_data += self.tcp_streams[key_reverse]["data"]
+
+        return conversation_data, (key_forward, key_reverse)
 
     def get_http_content(self, raw_data):
         """
@@ -398,7 +480,11 @@ class SnifferBackend:
             # Try to decode as HTTP response
             headers_part, body = raw_data.split(b"\r\n\r\n", 1)
             headers_str = headers_part.decode("utf-8", errors="ignore")
-            headers = dict(line.split(": ", 1) for line in headers_str.split("\r\n")[1:] if ": " in line)
+            headers = dict(
+                line.split(": ", 1)
+                for line in headers_str.split("\r\n")[1:]
+                if ": " in line
+            )
 
             content = body
             # Handle Gzip decompression
@@ -406,20 +492,64 @@ class SnifferBackend:
                 try:
                     content = zlib.decompress(body, 16 + zlib.MAX_WBITS)
                 except zlib.error:
-                    return "[Gzip Decompression Failed]\n\n" + body.decode('latin-1')
-            
+                    return "[Gzip Decompression Failed]\n\n" + body.decode("latin-1")
+
             # Check for HTML and pretty-print it
             if "text/html" in headers.get("Content-Type", ""):
                 try:
                     soup = BeautifulSoup(content, "html.parser")
                     return soup.prettify()
                 except Exception:
-                    return content.decode('utf-8', errors='ignore')
+                    return content.decode("utf-8", errors="ignore")
 
             # Return plain text or other content types
-            return content.decode('utf-8', errors='ignore')
+            return content.decode("utf-8", errors="ignore")
 
         except (ValueError, UnicodeDecodeError):
             # If splitting or decoding fails, it might be a request or not HTTP at all.
             # Return the raw data representation.
-            return raw_data.decode('latin-1', errors='ignore')
+            return raw_data.decode("latin-1", errors="ignore")
+
+    def get_all_http_conversations(self):
+        """
+        MODIFIED: 遍历所有流来寻找和重组HTTP会话。
+        """
+        http_conversations = []
+        processed_streams = set()  # 防止双向流被处理两次
+
+        for stream_key, stream_obj in self.tcp_streams.items():
+            if stream_key in processed_streams:
+                continue
+
+            # 找到反向流的key
+            (src, sport, dst, dport) = stream_key
+            reverse_key = (dst, dport, src, sport)
+
+            # 将双向流的数据合并
+            full_data = stream_obj["data"]
+            if reverse_key in self.tcp_streams:
+                full_data += self.tcp_streams[reverse_key]["data"]
+                processed_streams.add(reverse_key)
+
+            # 检查合并后的数据是否包含HTTP
+            stream_start = full_data[:1024]
+            if (
+                b"HTTP" in stream_start
+                or b"GET" in stream_start
+                or b"POST" in stream_start
+            ):
+                # 后续逻辑与之前类似...
+                parsed_content = self.get_http_content(full_data)
+                try:
+                    first_line = full_data.decode("latin-1").splitlines()[0]
+                except IndexError:
+                    first_line = "Unknown HTTP Message"
+
+                conversation_summary = (
+                    f"--- Conversation between {src}:{sport} and {dst}:{dport} ---\n"
+                    f"--- Reassembled Content ---\n"
+                    f"{parsed_content}\n\n{'='*70}\n\n"
+                )
+                http_conversations.append(conversation_summary)
+
+        return http_conversations
