@@ -429,7 +429,7 @@ class SnifferGUI(tk.Tk):
             if stream_data:
                 # If it's an HTTP packet, try to parse the content
                 if proto == "HTTP":
-                    display_content = self.backend.get_http_content(stream_data)
+                    display_content = self.backend._parse_http_data(stream_data)
                     header = f"--- Showing HTTP Content (Stream: {stream_key}) ---\n\n"
                     self.data_text.insert(tk.END, header + display_content)
                 # For generic TCP or encrypted HTTPS, show the raw stream

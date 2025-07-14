@@ -8,4 +8,6 @@ dependencies = [
     "scapy>=2.6.1",
     "pyparsing>=3.0.0",
     "beautifulsoup4>=4.13.4",
+    "brotli>=1.1.0",
+    "tkhtmlview>=0.3.1",
 ]
