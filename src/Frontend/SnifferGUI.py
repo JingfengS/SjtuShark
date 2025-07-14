@@ -109,29 +109,33 @@ class SnifferGUI(tk.Tk):
         self.details_notebook.add(self.data_frame, text="Reassembled Data")
 
     def _layout_widgets(self):
-        """Lays out the widgets in the main window."""
+        """Lays out the widgets in the main window with responsive layout."""
         self.controls_frame.pack(side="top", fill="x", padx=10, pady=5)
-        self.iface_label.pack(side="left", padx=5, pady=5)
-        self.iface_combo.pack(side="left", padx=5, pady=5)
-        self.start_button.pack(side="left", padx=5, pady=5)
-        self.stop_button.pack(side="left", padx=5, pady=5)
 
-        # Pack the new buttons
-        self.filter_button.pack(side="left", padx=5, pady=5)
-        self.search_button.pack(side="left", padx=5, pady=5)
-        self.logs_button.pack(side="left", padx=5, pady=5)
-        self.reassemble_button.pack(side="left", padx=5, pady=5)
+        # 使用 grid 布局，让按钮自适应窗口大小
+        for i in range(12):
+            self.controls_frame.columnconfigure(i, weight=1, uniform="btn")
 
-        self.save_button.pack(side="left", padx=5, pady=5)
-        self.export_button.pack(side="left", padx=5, pady=5)
-        self.import_button.pack(side="left", padx=5, pady=5)
-        self.exit_button.pack(side="right", padx=5, pady=5)
+        # 第0行：接口选择
+        self.iface_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.iface_combo.grid(row=0, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
 
+        # 第1行：所有按钮
+        buttons = [
+            self.start_button, self.stop_button, self.filter_button,
+            self.search_button, self.logs_button, self.reassemble_button,
+            self.save_button, self.export_button, self.import_button
+        ]
+        for idx, btn in enumerate(buttons):
+            btn.grid(row=1, column=idx, sticky="ew", padx=2, pady=2)
+
+        # 退出按钮靠右
+        self.exit_button.grid(row=1, column=10, sticky="e", padx=5, pady=2)
+
+        # 下方区域保持不变
         self.packets_frame.pack(expand=True, fill="both", padx=10, pady=5)
         self.tree.pack(expand=True, fill="both")
-
         self.details_notebook.pack(expand=True, fill="both", padx=10, pady=10)
-
     # New methods for the additional functionality
     def show_filter_dialog(self):
         """Show dialog for packet filtering."""
