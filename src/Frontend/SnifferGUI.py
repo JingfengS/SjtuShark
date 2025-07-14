@@ -56,6 +56,12 @@ class SnifferGUI(tk.Tk):
         self.save_button = ttk.Button(
             self.controls_frame, text="Save to TXT", command=self.save_to_txt
         )
+        self.export_button = ttk.Button(
+            self.controls_frame, text="Export to PCAP", command=self.export_to_pcap
+        )
+        self.import_button = ttk.Button(
+            self.controls_frame, text="Import from PCAP", command=self.import_from_pcap
+        )
         self.exit_button = ttk.Button(
             self.controls_frame, text="Exit", command=self.quit
         )
@@ -117,6 +123,8 @@ class SnifferGUI(tk.Tk):
         self.reassemble_button.pack(side="left", padx=5, pady=5)
 
         self.save_button.pack(side="left", padx=5, pady=5)
+        self.export_button.pack(side="left", padx=5, pady=5)
+        self.import_button.pack(side="left", padx=5, pady=5)
         self.exit_button.pack(side="right", padx=5, pady=5)
 
         self.packets_frame.pack(expand=True, fill="both", padx=10, pady=5)
@@ -127,6 +135,11 @@ class SnifferGUI(tk.Tk):
     # New methods for the additional functionality
     def show_filter_dialog(self):
         """Show dialog for packet filtering."""
+        if self.backend.is_sniffing:
+            messagebox.showwarning(
+                "Warning", "Please stop capturing before applying a filter."
+            )
+            return
         filter_dialog = tk.Toplevel(self)
         filter_dialog.title("Packet Filter")
         filter_dialog.geometry("450x150")
@@ -180,6 +193,11 @@ class SnifferGUI(tk.Tk):
 
     def show_search_dialog(self):
         """Show dialog for searching packets."""
+        if self.backend.is_sniffing:
+            messagebox.showwarning(
+                "Warning", "Please stop capturing before searching packets."
+            )
+            return
         search_dialog = tk.Toplevel(self)
         search_dialog.title("Packet Search")
         search_dialog.geometry("400x130")
@@ -223,6 +241,11 @@ class SnifferGUI(tk.Tk):
 
     def show_logs(self):
         """Display capture logs in a new window."""
+        if self.backend.is_sniffing:
+            messagebox.showwarning(
+                "Warning", "Please stop capturing before viewing logs."
+            )
+            return
         log_window = tk.Toplevel(self)
         log_window.title("Capture Logs")
         log_window.geometry("600x400")
@@ -245,6 +268,11 @@ class SnifferGUI(tk.Tk):
 
     def packet_reassembly(self):
         """Show dialog for packet reassembly options."""
+        if self.backend.is_sniffing:
+            messagebox.showwarning(
+                "Warning", "Please stop capturing before reassembling packets."
+            )
+            return
         reassembly_dialog = tk.Toplevel(self)
         reassembly_dialog.title("Packet Reassembly")
         reassembly_dialog.geometry("400x300")
@@ -455,6 +483,11 @@ class SnifferGUI(tk.Tk):
 
     def save_to_txt(self):
         """Saves the captured packet summaries to a text file."""
+        if self.backend.is_sniffing:
+            messagebox.showwarning(
+                "Warning", "Please stop capturing before saving packets."
+            )
+            return
         if not self.backend.captured_packets:
             messagebox.showinfo("Info", "There are no packets to save.")
             return
@@ -470,3 +503,50 @@ class SnifferGUI(tk.Tk):
         # 建议调用后端方法
         self.backend.save_captured_packets(file_path)
         messagebox.showinfo("Success", f"Data saved to {file_path}")
+
+    def export_to_pcap(self):
+        """Exports captured packets to a PCAP file."""
+        if self.backend.is_sniffing:
+            messagebox.showwarning(
+                "Warning", "Please stop capturing before exporting packets."
+            )
+            return
+        if not self.backend.captured_packets:
+            messagebox.showinfo("Info", "There are no packets to export.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".pcap",
+            filetypes=[("PCAP files", "*.pcap"), ("All files", "*.*")],
+            title="Export Packets To PCAP",
+        )
+        if not file_path:
+            return
+
+        # Call the backend method to save packets in PCAP format
+        self.backend.export_to_pcap(file_path)
+        messagebox.showinfo("Success", f"Packets exported to {file_path}")
+
+    def import_from_pcap(self):
+        """Imports packets from a PCAP file."""
+        if self.backend.is_sniffing:
+            messagebox.showwarning(
+                "Warning", "Please stop capturing before importing packets."
+            )
+            return
+        file_path = filedialog.askopenfilename(
+            filetypes=[("PCAP files", "*.pcap"), ("All files", "*.*")],
+            title="Import Packets From PCAP",
+        )
+        if not file_path:
+            return
+
+        try:
+            self.backend.import_from_pcap(file_path)
+            messagebox.showinfo("Success", f"Packets imported from {file_path}")
+            # Refresh the Treeview with the newly imported packets
+            self.tree.delete(*self.tree.get_children())
+            for idx, (summary, _) in enumerate(self.backend.captured_packets):
+                self.tree.insert("", "end", values=(idx + 1,) + summary, tags=(summary[3],))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to import packets: {str(e)}")
