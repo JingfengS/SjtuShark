@@ -574,7 +574,7 @@ class SnifferGUI(tk.Tk):
         This is called by the backend sniffer thread.
         """
         # The `after` method schedules a function to be called in the main GUI thread
-        self.after(0, self._insert_packet_data)  # 不再传递具体信息
+        self.after_idle(self._insert_packet_data)  # 不再传递具体信息
 
     def _insert_packet_data(self):
         """Inserts packet data into the Treeview and stores details."""
