@@ -20,6 +20,7 @@ from pyparsing import (
 )
 import zlib
 from bs4 import BeautifulSoup
+import re
 from .TCP_Assembler import ImprovedTCPReassembler
 
 # --- Backend Logic ---
@@ -405,16 +406,18 @@ class SnifferBackend:
         summary = []
         for item in raw:
             stats = item["summary"]
-            summary.append({
-                "session_key": item["session_key"],
-                "src":   stats["client"][0],
-                "sport": stats["client"][1],
-                "dst":   stats["server"][0],
-                "dport": stats["server"][1],
-                "length": stats["client_to_server_bytes"]
-                        + stats["server_to_client_bytes"],
-                "protocol": stats["protocol"],
-            })
+            summary.append(
+                {
+                    "session_key": item["session_key"],
+                    "src": stats["client"][0],
+                    "sport": stats["client"][1],
+                    "dst": stats["server"][0],
+                    "dport": stats["server"][1],
+                    "length": stats["client_to_server_bytes"]
+                    + stats["server_to_client_bytes"],
+                    "protocol": stats["protocol"],
+                }
+            )
         return summary
 
     # --- ADDED: New methods for data reassembly and parsing ---
@@ -521,3 +524,312 @@ class SnifferBackend:
 
         except Exception as e:
             return f"Error parsing HTTP data: {str(e)}"
+
+    def get_http_session_data(self, session_key):
+        """
+        获取特定会话的HTTP数据，返回结构化的HTTP消息
+        """
+        if not session_key:
+            return None
+
+        # 获取双向流数据
+        stream_data = self.tcp_reassembler.get_stream_data(session_key, "both")
+
+        if not stream_data:
+            return None
+
+        # 创建HTTP内容查看器实例（如果还没有）
+        if not hasattr(self, "http_viewer"):
+            from ..Frontend.HTTP_Viewer import HTTPContentViewer
+
+            self.http_viewer = HTTPContentViewer()
+
+        # 合并客户端和服务器数据
+        combined_data = (
+            stream_data["client_to_server"] + stream_data["server_to_client"]
+        )
+
+        # 解析HTTP消息
+        http_messages = self.http_viewer.parse_http_message(combined_data)
+
+        return {
+            "session_key": session_key,
+            "client_data": stream_data["client_to_server"],
+            "server_data": stream_data["server_to_client"],
+            "http_messages": http_messages,
+            "protocol": stream_data["protocol"],
+        }
+
+
+def get_all_http_sessions_enhanced(self):
+    """
+    获取所有HTTP会话的增强版本，返回结构化数据
+    """
+    http_sessions = []
+
+    # 获取所有TCP流
+    all_streams = self.tcp_reassembler.get_all_streams()
+
+    for stream_info in all_streams:
+        session_key = stream_info["session_key"]
+        summary = stream_info["summary"]
+
+        # 只处理HTTP流
+        if summary["protocol"] != "HTTP":
+            continue
+
+        # 获取会话数据
+        session_data = self.get_http_session_data(session_key)
+
+        if session_data and session_data["http_messages"]:
+            http_sessions.append(
+                {
+                    "session_key": session_key,
+                    "client": summary["client"],
+                    "server": summary["server"],
+                    "client_bytes": summary["client_to_server_bytes"],
+                    "server_bytes": summary["server_to_client_bytes"],
+                    "messages": session_data["http_messages"],
+                    "start_time": summary["start_time"],
+                }
+            )
+
+    return http_sessions
+
+
+def extract_http_content(self, packet_id):
+    """
+    从特定的包中提取HTTP内容，返回可视化数据
+    """
+    if not (0 <= packet_id < len(self.captured_packets_raw)):
+        return None
+
+    packet = self.captured_packets_raw[packet_id]
+    if not packet.haslayer(TCP):
+        return None
+
+    # 获取会话key
+    stream_key = self.tcp_reassembler.get_stream_key(packet)
+    session_key = self.tcp_reassembler.get_bidirectional_key(stream_key)
+
+    if not session_key:
+        return None
+
+    # 获取会话数据
+    session_data = self.get_http_session_data(session_key)
+
+    if not session_data:
+        return None
+
+    # 提取有用的信息
+    result = {
+        "session_key": session_key,
+        "has_html": False,
+        "has_json": False,
+        "has_image": False,
+        "requests": [],
+        "responses": [],
+        "html_content": None,
+        "json_content": None,
+    }
+
+    for msg in session_data["http_messages"]:
+        if msg.get("type") == "request":
+            result["requests"].append(
+                {
+                    "method": msg.get("method"),
+                    "path": msg.get("path"),
+                    "host": msg.get("host"),
+                    "query_params": msg.get("query_params", {}),
+                }
+            )
+        elif msg.get("type") == "response":
+            response_info = {
+                "status_code": msg.get("status_code"),
+                "status_text": msg.get("status_text"),
+                "content_type": msg.get("content_type"),
+            }
+
+            if msg.get("is_html"):
+                result["has_html"] = True
+                result["html_content"] = msg.get("body")
+
+            if msg.get("is_json"):
+                result["has_json"] = True
+                result["json_content"] = msg.get("parsed_body")
+
+            # 检查是否是图片
+            if any(
+                img_type in msg.get("content_type", "")
+                for img_type in ["image/jpeg", "image/png", "image/gif", "image/webp"]
+            ):
+                result["has_image"] = True
+
+            result["responses"].append(response_info)
+
+    return result
+
+
+# 在TCP_Assembler.py的ImprovedTCPReassembler类中添加
+def parse_http_stream(self, session_key):
+    """
+    解析TCP流中的HTTP数据
+    """
+    with self.lock:
+        if session_key not in self.tcp_streams:
+            return None
+
+        stream = self.tcp_streams[session_key]
+
+        # 如果已经解析过，直接返回
+        if stream.get("http_parsed"):
+            return stream.get("http_msgs", [])
+
+        # 只对HTTP协议进行解析
+        if stream["protocol"] != "HTTP":
+            return None
+
+        # 获取双向数据
+        client_data = stream["client_to_server"].data
+        server_data = stream["server_to_client"].data
+
+        http_msgs = []
+
+        # 解析客户端请求
+        if client_data:
+            requests = self._parse_http_requests(client_data)
+            for req in requests:
+                req["direction"] = "request"
+                http_msgs.append(req)
+
+        # 解析服务器响应
+        if server_data:
+            responses = self._parse_http_responses(server_data)
+            for resp in responses:
+                resp["direction"] = "response"
+                http_msgs.append(resp)
+
+        # 标记为已解析
+        stream["http_parsed"] = True
+        stream["http_msgs"] = http_msgs
+
+        return http_msgs
+
+
+def _parse_http_requests(self, data):
+    """解析HTTP请求"""
+    requests = []
+
+    try:
+        text = data.decode("utf-8", errors="ignore")
+
+        # 查找所有HTTP请求的起始位置
+        request_pattern = (
+            r"(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+\S+\s+HTTP/\d\.\d"
+        )
+        matches = list(re.finditer(request_pattern, text))
+
+        for i, match in enumerate(matches):
+            start = match.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+
+            request_text = text[start:end]
+
+            # 分离头部和正文
+            parts = request_text.split("\r\n\r\n", 1)
+            headers_text = parts[0]
+            body = parts[1] if len(parts) > 1 else ""
+
+            # 解析请求行
+            lines = headers_text.split("\r\n")
+            request_line = lines[0]
+            method, path, version = request_line.split(" ", 2)
+
+            # 解析头部
+            headers = {}
+            for line in lines[1:]:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    headers[key.strip()] = value.strip()
+
+            requests.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "version": version,
+                    "headers": headers,
+                    "body": body,
+                    "timestamp": datetime.datetime.now(),  # 可以从包时间戳获取
+                }
+            )
+
+    except Exception as e:
+        print(f"Error parsing HTTP requests: {e}")
+
+    return requests
+
+
+def _parse_http_responses(self, data):
+    """解析HTTP响应"""
+    responses = []
+
+    try:
+        text = data.decode("utf-8", errors="ignore")
+
+        # 查找所有HTTP响应的起始位置
+        response_pattern = r"HTTP/\d\.\d\s+\d{3}"
+        matches = list(re.finditer(response_pattern, text))
+
+        for i, match in enumerate(matches):
+            start = match.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+
+            response_text = text[start:end]
+
+            # 分离头部和正文
+            parts = response_text.split("\r\n\r\n", 1)
+            headers_text = parts[0]
+            body = parts[1] if len(parts) > 1 else ""
+
+            # 解析状态行
+            lines = headers_text.split("\r\n")
+            status_line = lines[0]
+            parts = status_line.split(" ", 2)
+            version = parts[0]
+            status_code = parts[1]
+            status_text = parts[2] if len(parts) > 2 else ""
+
+            # 解析头部
+            headers = {}
+            for line in lines[1:]:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    headers[key.strip()] = value.strip()
+
+            # 处理压缩内容
+            if headers.get("Content-Encoding") == "gzip" and body:
+                try:
+                    import gzip
+
+                    body = gzip.decompress(body.encode("latin-1")).decode(
+                        "utf-8", errors="ignore"
+                    )
+                except:
+                    pass
+
+            responses.append(
+                {
+                    "version": version,
+                    "status_code": status_code,
+                    "status_text": status_text,
+                    "headers": headers,
+                    "body": body,
+                    "content_type": headers.get("Content-Type", ""),
+                    "timestamp": datetime.datetime.now(),
+                }
+            )
+
+    except Exception as e:
+        print(f"Error parsing HTTP responses: {e}")
+
+    return responses

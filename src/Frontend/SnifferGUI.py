@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 from ..Backend.SnifferBackend import SnifferBackend
+from .HTTP_Viewer import HTTPContentViewer
+import json
 
 
 class SnifferGUI(tk.Tk):
@@ -15,6 +17,7 @@ class SnifferGUI(tk.Tk):
 
         # Initialize the backend
         self.backend = SnifferBackend(self.add_packet_to_gui)
+        self.http_viewer = HTTPContentViewer()
 
         # Create and layout the widgets
         self._create_widgets()
@@ -102,11 +105,53 @@ class SnifferGUI(tk.Tk):
 
         # Tab 2: For reassembled TCP and HTTP content
         self.data_frame = ttk.Frame(self.details_notebook)
+
+        # 添加一个工具栏用于HTTP内容
+        self.http_toolbar = ttk.Frame(self.data_frame)
+        self.open_browser_button = ttk.Button(
+            self.http_toolbar,
+            text="Open in Browser",
+            command=self._open_http_in_browser,
+            state="disabled",
+        )
+        self.open_browser_button.pack(side="left", padx=5)
+
+        self.open_raw_html_button = ttk.Button(
+            self.http_toolbar,
+            text="Open Raw HTML",
+            command=self._open_raw_html,
+            state="disabled",
+        )
+        self.open_raw_html_button.pack(side="left", padx=5)
+
+        self.export_http_button = ttk.Button(
+            self.http_toolbar,
+            text="Export HTTP Session",
+            command=self._export_http_session,
+            state="disabled",
+        )
+        self.export_http_button.pack(side="left", padx=5)
+
+        # HTTP内容显示区域
         self.data_text = scrolledtext.ScrolledText(
             self.data_frame, wrap=tk.WORD, height=15
         )
+
+        self.http_toolbar.pack(side="top", fill="x", pady=5)
         self.data_text.pack(expand=True, fill="both")
+
         self.details_notebook.add(self.data_frame, text="Reassembled Data")
+
+        # Tab 3: HTTP美化视图
+        self.http_view_frame = ttk.Frame(self.details_notebook)
+        self.http_view_text = scrolledtext.ScrolledText(
+            self.http_view_frame, wrap=tk.WORD, height=15
+        )
+        self.http_view_text.pack(expand=True, fill="both")
+        self.details_notebook.add(self.http_view_frame, text="HTTP View")
+        # 存储当前选中的包信息
+        self.current_packet_id = None
+        self.current_http_messages = None
 
     def _layout_widgets(self):
         """Lays out the widgets in the main window with responsive layout."""
@@ -324,24 +369,74 @@ class SnifferGUI(tk.Tk):
             # 创建新窗口以显示摘要
             reassembly_window = tk.Toplevel(self)
             reassembly_window.title("TCP会话摘要")
-            reassembly_window.geometry("800x600")
+            reassembly_window.geometry("900x600")
 
-            text = scrolledtext.ScrolledText(reassembly_window, wrap=tk.WORD)
-            text.pack(expand=True, fill="both", padx=10, pady=10)
-
-            text.insert(tk.END, "=== TCP 会话摘要 ===\n\n")
+            # 创建一个带滚动条的Treeview来显示会话
+            tree_frame = ttk.Frame(reassembly_window)
+            tree_frame.pack(expand=True, fill="both", padx=10, pady=10)
+            
+            # 创建Treeview
+            columns = ("Session", "Protocol", "Size", "Client→Server", "Server→Client")
+            session_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15)
+            
+            # 设置列标题
+            session_tree.heading("Session", text="会话")
+            session_tree.heading("Protocol", text="协议")
+            session_tree.heading("Size", text="总大小")
+            session_tree.heading("Client→Server", text="客户端→服务器")
+            session_tree.heading("Server→Client", text="服务器→客户端")
+            
+            # 设置列宽
+            session_tree.column("Session", width=300)
+            session_tree.column("Protocol", width=80)
+            session_tree.column("Size", width=100)
+            session_tree.column("Client→Server", width=120)
+            session_tree.column("Server→Client", width=120)
+            
+            # 添加滚动条
+            scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=session_tree.yview)
+            session_tree.configure(yscrollcommand=scrollbar.set)
+            
+            # 填充数据
             for stream in summary:
-                # 显示会话信息和双向数据总长度
-                text.insert(
-                    tk.END,
-                    f"会话: {stream['src']}:{stream['sport']} <-> {stream['dst']}:{stream['dport']}\n",
-                )
-                text.insert(tk.END, f"双向数据总长度: {stream['length']} 字节\n")
-                text.insert(tk.END, "-" * 50 + "\n")
-            text.config(state="disabled")
+                session = f"{stream['src']}:{stream['sport']} ↔ {stream['dst']}:{stream['dport']}"
+                protocol = stream.get('protocol', 'TCP')
+                size = f"{stream['length']} bytes"
+                
+                # 获取详细的流统计信息
+                session_key = stream.get('session_key')
+                if session_key:
+                    stats = self.backend.tcp_reassembler.get_stream_statistics(session_key)
+                    if stats:
+                        c2s = f"{stats['client_to_server_bytes']} bytes"
+                        s2c = f"{stats['server_to_client_bytes']} bytes"
+                    else:
+                        c2s = s2c = "N/A"
+                else:
+                    c2s = s2c = "N/A"
+                
+                session_tree.insert("", "end", values=(session, protocol, size, c2s, s2c))
+            
+            # 布局
+            session_tree.pack(side="left", expand=True, fill="both")
+            scrollbar.pack(side="right", fill="y")
+            
+            # 添加按钮框架
+            button_frame = ttk.Frame(reassembly_window)
+            button_frame.pack(fill="x", padx=10, pady=5)
+            
+            def view_selected_session():
+                selected = session_tree.selection()
+                if selected:
+                    item = session_tree.item(selected[0])
+                    values = item['values']
+                    messagebox.showinfo("Session Details", f"Selected session: {values[0]}")
+            
+            ttk.Button(button_frame, text="View Details", command=view_selected_session).pack(side="left", padx=5)
+            ttk.Button(button_frame, text="Close", command=reassembly_window.destroy).pack(side="right", padx=5)
 
         elif method == "http":
-            # 这部分逻辑与之前给出的版本相同，因为它调用的后台函数接口设计良好，无需改动
+            # HTTP重组对话框（增强版）
             conversations = self.backend.get_all_http_conversations()
             if not conversations:
                 messagebox.showinfo(
@@ -351,20 +446,94 @@ class SnifferGUI(tk.Tk):
 
             # 创建新窗口以显示重组后的HTTP内容
             http_window = tk.Toplevel(self)
-            http_window.title("重组后的HTTP会话")
-            http_window.geometry("900x700")
+            http_window.title("HTTP会话分析器")
+            http_window.geometry("1000x700")
 
-            text_widget = scrolledtext.ScrolledText(http_window, wrap=tk.WORD)
-            text_widget.pack(expand=True, fill="both", padx=10, pady=10)
-
-            text_widget.insert(
-                tk.END, f"已找到 {len(conversations)} 个HTTP会话。\n\n{'='*70}\n\n"
+            # 创建一个PanedWindow来分割界面
+            paned = ttk.PanedWindow(http_window, orient="horizontal")
+            paned.pack(expand=True, fill="both", padx=10, pady=10)
+            
+            # 左侧：会话列表
+            left_frame = ttk.Frame(paned)
+            paned.add(left_frame, weight=1)
+            
+            ttk.Label(left_frame, text="HTTP会话列表", font=("Arial", 10, "bold")).pack(pady=5)
+            
+            # 会话列表
+            session_listbox = tk.Listbox(left_frame, width=40)
+            session_listbox.pack(expand=True, fill="both", padx=5)
+            
+            # 解析所有会话并提取摘要信息
+            all_parsed_sessions = []
+            for i, conv_text in enumerate(conversations):
+                # 从会话文本中提取基本信息
+                lines = conv_text.split('\n')
+                session_info = lines[0] if lines else f"Session #{i+1}"
+                session_listbox.insert(tk.END, session_info)
+                
+                # 解析会话内容
+                # 这里需要从原始TCP流重新获取数据
+                all_parsed_sessions.append(conv_text)
+            
+            # 右侧：详细内容显示
+            right_frame = ttk.Frame(paned)
+            paned.add(right_frame, weight=3)
+            
+            # 创建Notebook来显示不同视图
+            detail_notebook = ttk.Notebook(right_frame)
+            detail_notebook.pack(expand=True, fill="both")
+            
+            # Raw视图
+            raw_frame = ttk.Frame(detail_notebook)
+            raw_text = scrolledtext.ScrolledText(raw_frame, wrap=tk.WORD)
+            raw_text.pack(expand=True, fill="both")
+            detail_notebook.add(raw_frame, text="Raw Data")
+            
+            # Formatted视图
+            formatted_frame = ttk.Frame(detail_notebook)
+            formatted_text = scrolledtext.ScrolledText(formatted_frame, wrap=tk.WORD)
+            formatted_text.pack(expand=True, fill="both")
+            detail_notebook.add(formatted_frame, text="Formatted")
+            
+            # 按钮框架
+            button_frame = ttk.Frame(right_frame)
+            button_frame.pack(fill="x", pady=5)
+            
+            open_browser_btn = ttk.Button(
+                button_frame, 
+                text="在浏览器中打开",
+                state="disabled"
             )
-
-            for convo_text in conversations:
-                text_widget.insert(tk.END, convo_text)
-
-            text_widget.config(state="disabled")
+            open_browser_btn.pack(side="left", padx=5)
+            
+            export_btn = ttk.Button(
+                button_frame,
+                text="导出会话",
+                state="disabled"
+            )
+            export_btn.pack(side="left", padx=5)
+            
+            # 选择事件处理
+            def on_session_select(event):
+                selection = session_listbox.curselection()
+                if selection:
+                    idx = selection[0]
+                    # 显示原始数据
+                    raw_text.config(state="normal")
+                    raw_text.delete(1.0, tk.END)
+                    raw_text.insert(tk.END, all_parsed_sessions[idx])
+                    raw_text.config(state="disabled")
+                    
+                    # TODO: 这里可以添加更多格式化显示
+                    formatted_text.config(state="normal")
+                    formatted_text.delete(1.0, tk.END)
+                    formatted_text.insert(tk.END, "Formatted view coming soon...")
+                    formatted_text.config(state="disabled")
+            
+            session_listbox.bind("<<ListboxSelect>>", on_session_select)
+            
+            # 关闭按钮
+            ttk.Button(http_window, text="关闭", command=http_window.destroy).pack(pady=10)
 
         else:
             # 其他协议的占位符
@@ -431,6 +600,12 @@ class SnifferGUI(tk.Tk):
             widget.config(state="normal")
             widget.delete(1.0, tk.END)
 
+        # 重置HTTP相关按钮状态
+        self.open_browser_button.config(state="disabled")
+        self.open_raw_html_button.config(state="disabled")
+        self.export_http_button.config(state="disabled")
+        self.current_http_messages = None
+
         item_id = selected_item[0]
         values = self.tree.item(item_id)["values"]
         if not values:
@@ -461,10 +636,32 @@ class SnifferGUI(tk.Tk):
             if stream_data:
                 # If it's an HTTP packet, try to parse the content
                 if proto == "HTTP":
-                    display_content = self.backend._parse_http_data(stream_data)
-                    header = f"--- Showing HTTP Content (Stream: {stream_key}) ---\n\n"
-                    self.data_text.insert(tk.END, header + display_content)
-                # For generic TCP or encrypted HTTPS, show the raw stream
+                    # 解析HTTP消息
+                    self.current_http_messages = self.http_viewer.parse_http_message(
+                        stream_data
+                    )
+
+                    if self.current_http_messages:
+                        # Tab 2: 显示原始重组数据
+                        header = f"--- HTTP Session (Stream: {stream_key}) ---\n\n"
+                        raw_display = self.backend._parse_http_data(stream_data)
+                        self.data_text.insert(tk.END, header + raw_display)
+
+                        # Tab 3: 显示美化的HTTP内容
+                        formatted_text = self.http_viewer.create_formatted_text_view(
+                            self.current_http_messages
+                        )
+                        self.http_view_text.insert(tk.END, formatted_text)
+
+                        # 启用HTTP相关按钮
+                        self.open_browser_button.config(state="normal")
+                        self.export_http_button.config(state="normal")
+
+                        # 检查是否有HTML响应
+                        for msg in self.current_http_messages:
+                            if msg.get("type") == "response" and msg.get("is_html"):
+                                self.open_raw_html_button.config(state="normal")
+                                break
                 else:
                     header = f"--- Showing Reassembled TCP Stream (Stream: {stream_key}) ---\n\n"
                     # Displaying raw bytes can be messy, so we decode with 'latin-1'
@@ -507,6 +704,85 @@ class SnifferGUI(tk.Tk):
         # 建议调用后端方法
         self.backend.save_captured_packets(file_path)
         messagebox.showinfo("Success", f"Data saved to {file_path}")
+
+    def _open_http_in_browser(self):
+        """在浏览器中打开HTTP会话的HTML预览"""
+        if not self.current_http_messages:
+            messagebox.showwarning("Warning", "No HTTP content to display")
+            return
+
+        success, result = self.http_viewer.save_and_open_in_browser(
+            self.current_http_messages
+        )
+        if success:
+            messagebox.showinfo(
+                "Success", f"HTTP session opened in browser.\nTemp file: {result}"
+            )
+        else:
+            messagebox.showerror("Error", f"Failed to open in browser: {result}")
+
+    def _open_raw_html(self):
+        """在浏览器中打开原始HTML响应"""
+        if not self.current_http_messages:
+            messagebox.showwarning("Warning", "No HTTP content available")
+            return
+
+        success, result = self.http_viewer.save_raw_html_response(
+            self.current_http_messages
+        )
+        if success:
+            messagebox.showinfo(
+                "Success", f"Raw HTML opened in browser.\nTemp file: {result}"
+            )
+        else:
+            messagebox.showerror("Error", f"Failed to open HTML: {result}")
+
+    def _export_http_session(self):
+        """导出HTTP会话"""
+        if not self.current_http_messages:
+            messagebox.showwarning("Warning", "No HTTP content to export")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".html",
+            filetypes=[
+                ("HTML files", "*.html"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+            title="Export HTTP Session As",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            if file_path.endswith(".json"):
+                # 导出为JSON格式
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json_data = []
+                    for msg in self.current_http_messages:
+                        # 移除一些不适合JSON序列化的字段
+                        clean_msg = {
+                            k: v
+                            for k, v in msg.items()
+                            if k not in ["parsed_body"]
+                            or not isinstance(v, str)
+                            or len(v) < 10000
+                        }
+                        json_data.append(clean_msg)
+                    json.dump(json_data, f, indent=2, ensure_ascii=False)
+            else:
+                # 导出为HTML格式
+                html_content = self.http_viewer.create_html_preview(
+                    self.current_http_messages
+                )
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(html_content)
+
+            messagebox.showinfo("Success", f"HTTP session exported to {file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export: {str(e)}")
 
     def export_to_pcap(self):
         """Exports captured packets to a PCAP file."""
